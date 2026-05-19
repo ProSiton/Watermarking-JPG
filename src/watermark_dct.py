@@ -19,7 +19,7 @@ import os
 # KONFIGURASI
 # ─────────────────────────────────────────────────────────────────────────────
 ALPHA        = 8.0        # Kekuatan embedding (semakin besar = lebih robust tapi visible)
-WATERMARK_BITS = 64       # Jumlah bit watermark (panjang pesan)
+WATERMARK_BITS = 1024      # Jumlah bit watermark (32x32 image)
 SEED         = 42         # Seed untuk PN sequence (kunci rahasia)
 QF_VALUES    = [5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100]  # Quality Factor JPEG
 
@@ -96,16 +96,31 @@ def load_or_create_host(path=None, size=256):
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. GENERATE WATERMARK
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_watermark(n_bits=WATERMARK_BITS, mode="binary"):
+def generate_watermark(n_bits=WATERMARK_BITS, mode="binary", image_path=None):
     """
     Buat watermark:
       - 'binary' : bit {0,1} secara deterministik
       - 'random' : bit acak sepenuhnya
+      - 'image'  : load dari file gambar (resize & binarize)
     """
     rng = np.random.default_rng(SEED + 1)
+    
+    if mode == "image" and image_path and os.path.exists(image_path):
+        # Load watermark dari gambar
+        wm_img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        dim = int(np.sqrt(n_bits))
+        wm_resized = cv2.resize(wm_img, (dim, dim))
+        # Binarisasi: Background putih jadi 1, objek hitam jadi 0
+        _, wm_bin = cv2.threshold(wm_resized, 128, 1, cv2.THRESH_BINARY)
+        return wm_bin.flatten().astype(np.float32)
+
     if mode == "binary":
         # Pola biner deterministik (bisa diganti teks/ID)
         bits = np.array([int(b) for b in format(0xDEADBEEFCAFEBABE, '064b')[:n_bits]])
+        # Jika n_bits > 64, pad dengan random atau repeat
+        if n_bits > 64:
+            padding = rng.integers(0, 2, n_bits - 64)
+            bits = np.concatenate([bits, padding])
     else:
         bits = rng.integers(0, 2, n_bits)
     return bits.astype(np.float32)
@@ -247,18 +262,19 @@ def visualize_watermark_pattern(watermark_bits):
     return cv2.resize(wm_img, (128, 128), interpolation=cv2.INTER_NEAREST)
 
 
-def run_full_evaluation(host_path=None, watermark_mode="binary"):
+def run_full_evaluation(host_path=None, watermark_mode="binary", watermark_path=None):
     print("=" * 60)
     print("  DCT Spread Spectrum Watermarking — Evaluasi Robustness JPEG")
     print("=" * 60)
 
     # ── Load gambar host ──
     host_img   = load_or_create_host(host_path, size=256)
-    wm_bits    = generate_watermark(WATERMARK_BITS, mode=watermark_mode)
+    wm_bits    = generate_watermark(WATERMARK_BITS, mode=watermark_mode, image_path=watermark_path)
     wm_display = visualize_watermark_pattern(wm_bits)
 
     print(f"[✓] Watermark ({watermark_mode}): {WATERMARK_BITS} bit")
-    print(f"    Bits: {wm_bits.astype(int)}")
+    if watermark_mode != "image":
+        print(f"    Bits: {wm_bits.astype(int)}")
 
     # ── Embedding ──
     wm_img = embed_watermark(host_img, wm_bits, alpha=ALPHA)
@@ -283,7 +299,8 @@ def run_full_evaluation(host_path=None, watermark_mode="binary"):
         extractable = b < 0.1   # threshold: BER < 10% dianggap berhasil
         results.append({
             "qf": qf, "ber": b, "nc": n_, "psnr": p,
-            "extractable": extractable, "extracted": ex
+            "extractable": extractable, "extracted": ex,
+            "image": comp
         })
         if qf in [5, 15, 30, 60, 90]:
             compressed_samples[qf] = comp
@@ -505,13 +522,22 @@ if __name__ == "__main__":
     src_dir    = os.path.dirname(os.path.abspath(__file__))   # .../src/
     images_dir = os.path.normpath(os.path.join(src_dir, "..", "images"))  # .../images/
 
-    # Mode watermark: "binary" atau "random"  (argumen opsional)
-    mode = sys.argv[1] if len(sys.argv) > 1 else "binary"
+    # Mode watermark: "image" (default), "binary" atau "random"
+    watermark_file = os.path.join(images_dir, "watermark.png")
+    
+    if len(sys.argv) > 1:
+        mode = sys.argv[1]
+    elif os.path.exists(watermark_file):
+        mode = "image"
+    else:
+        mode = "binary"
 
     print("=" * 60)
     print("  DCT Spread Spectrum Watermarking")
     print(f"  Folder input/output : {images_dir}")
     print(f"  Mode watermark      : {mode}")
+    if mode == "image":
+        print(f"  File watermark      : {os.path.basename(watermark_file)}")
     print("=" * 60)
 
     # ── Cari semua file .jpg/.jpeg di folder images/ ───────────────────────
@@ -546,13 +572,23 @@ if __name__ == "__main__":
         try:
             results, out_graph, wm_img = run_full_evaluation(
                 host_path=host_path,
-                watermark_mode=mode
+                watermark_mode=mode,
+                watermark_path=watermark_file
             )
 
-            # Simpan gambar hasil watermark ke folder images/
+            # Simpan gambar hasil watermark (lossless original matrix)
             wm_bgr = cv2.cvtColor(wm_img, cv2.COLOR_RGB2BGR)
             cv2.imwrite(out_jpg, wm_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-            print(f"[✓] Tersimpan : {out_jpg}")
+            print(f"[✓] Tersimpan (Original WM): {os.path.basename(out_jpg)}")
+
+            # Simpan setiap variasi QF
+            for r in results:
+                qf = r["qf"]
+                qf_img = r["image"]
+                qf_out_path = os.path.join(images_dir, f"{base_name}_watermarked_qf{qf}.jpg")
+                qf_bgr = cv2.cvtColor(qf_img, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(qf_out_path, qf_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), qf])
+                print(f"    - Tersimpan QF {qf:3d}: {os.path.basename(qf_out_path)}")
 
         except Exception as e:
             print(f"[✗] Gagal memproses {os.path.basename(host_path)}: {e}")

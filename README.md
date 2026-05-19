@@ -1,216 +1,178 @@
 # 🔏 Digital Watermarking — DCT Spread Spectrum
 
-Implementasi **invisible digital watermarking** pada citra wajah menggunakan metode **DCT Spread Spectrum**.  
-Watermark disisipkan ke domain frekuensi (DCT) sehingga tidak terlihat mata namun dapat diekstrak kembali.
+Repositori ini berisi implementasi **invisible digital watermarking** pada citra menggunakan metode **DCT Spread Spectrum**. Sistem menyisipkan watermark (logo/pesan) ke dalam domain frekuensi (DCT) dari sebuah gambar sehingga perubahan visualnya tidak kasat mata, namun watermark tetap dapat diekstrak kembali meskipun gambar telah dikompresi.
+
+---
+
+## 🖼️ Perbandingan Visual (Showcase)
+
+Berikut adalah hasil penyisipan watermark menggunakan script ini:
+
+| Gambar Host (Asli) | Watermark (Logo) | Hasil Watermarked |
+| :---: | :---: | :---: |
+| ![Host](images/Test_Project.jpg) | ![Watermark](images/watermark.png) | ![Result](images/Test_Project_watermarked.jpg) |
+
+> **Catatan:** Perhatikan bahwa secara visual, hampir tidak ada perbedaan antara Gambar Host dan Hasil Watermarked (bersifat *invisible*), namun di dalam frekuensi DCT gambar tersebut telah tersimpan informasi dari Logo Watermark.
 
 ---
 
 ## 📁 Struktur Folder
 
-```
+```text
 WATERMARKING/
 ├── docs/
-│   └── Tugas Watermarking.pdf
-├── images/                          ← Input & Output gambar
-│   ├── Test_Project.jpg             ← Foto asli (input)
-│   ├── Test_Project_watermarked.jpg ← Hasil watermark (output)
-│   └── watermark_evaluation.png     ← Grafik evaluasi (output)
+│   └── Tugas Watermarking.pdf           ← Referensi teori & tugas
+├── images/                              ← Folder input & output gambar
+│   ├── Test_Project.jpg                 ← Gambar host (Asli)
+│   ├── watermark.png                    ← Gambar watermark (Logo)
+│   ├── Test_Project_watermarked.jpg     ← Hasil gambar yang telah disisipi watermark
+│   ├── Test_Project_watermarked_qf*.jpg ← Hasil uji kompresi JPEG (berbagai QF)
+│   └── watermark_evaluation.png         ← Grafik hasil evaluasi (BER, NC, PSNR)
 ├── src/
-│   └── watermark_dct.py             ← Script utama
+│   └── watermark_dct.py                 ← Script utama pemrosesan
 ├── .gitattributes
 └── README.md
 ```
 
-> **Aturan:** Script **hanya memproses file `.jpg`/`.jpeg` di folder `images/`**.  
-> Semua output (gambar watermarked + grafik evaluasi) otomatis tersimpan ke `images/`.
-
 ---
 
-## ⚙️ Instalasi
+## ⚙️ Instalasi & Cara Menjalankan
 
-Pastikan Python 3 sudah terinstall, lalu install dependencies:
+Pastikan Anda memiliki **Python 3** terinstall, lalu install pustaka yang dibutuhkan:
 
 ```bash
 pip install numpy opencv-python matplotlib pillow
 ```
 
----
-
-## 🚀 Cara Menjalankan
-
-Jalankan dari folder `src/`:
+Jalankan program dari direktori utama project. Program otomatis akan mencari gambar di folder `images/` dan menyisipkan `watermark.png`.
 
 ```bash
-cd src
-
-# Mode watermark biner (default)
-python watermark_dct.py
-
-# Mode watermark acak
-python watermark_dct.py random
-```
-
-> Script akan otomatis mencari **semua file JPG** di folder `images/` dan memprosesnya satu per satu.  
-> File yang sudah diberi suffix `_watermarked` akan dilewati agar tidak diproses ulang.
-
-**Contoh output di terminal:**
-
-```
-============================================================
-  DCT Spread Spectrum Watermarking
-  Folder input/output : C:\...\WATERMARKING\images
-  Mode watermark      : binary
-============================================================
-
-[✓] Ditemukan 1 file JPG:
-    • Test_Project.jpg
-
-[>] Memproses : Test_Project.jpg
-    Output    : Test_Project_watermarked.jpg
-
-[✓] Watermark embedded — PSNR host vs watermarked: 34.91 dB
-[✓] Tersimpan : .../images/Test_Project_watermarked.jpg
-[✓] Grafik evaluasi disimpan : .../images/watermark_evaluation.png
-
-============================================================
-  Selesai! Hasil tersimpan di folder:
-  C:\...\WATERMARKING\images
-============================================================
+python src/watermark_dct.py image
 ```
 
 ---
 
-## 🔧 Konfigurasi
+## 📖 Alur Sistem (Step-by-Step)
 
-Edit bagian atas `src/watermark_dct.py` untuk mengubah parameter:
+Berikut adalah penjelasan langkah demi langkah bagaimana program `src/watermark_dct.py` bekerja memproses gambar `images/Test_Project.jpg` dan menyisipkan `images/watermark.png`.
 
+### 1. Load Gambar Host
+Sistem pertama kali akan membaca gambar host (`Test_Project.jpg`). Gambar diubah ukurannya menjadi 256×256 piksel agar ukuran seragam.
 ```python
-ALPHA          = 8.0   # Kekuatan watermark
-                       # ↑ Besar = lebih tahan JPEG, tapi gambar sedikit berubah
-                       # ↓ Kecil = tidak terlihat, tapi mudah hancur oleh kompresi
+def load_or_create_host(path=None, size=256):
+    img = cv2.imread(path)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (size, size))
+    return img
+```
 
-WATERMARK_BITS = 64    # Jumlah bit pesan watermark
+### 2. Membuat / Load Watermark
+Sistem memuat gambar `watermark.png`, me-resize menjadi 32×32 piksel, lalu melakukan binarisasi (hitam=0, putih=1). Hasilnya diratakan (flatten) menjadi array 1D berisi **1024 bit**.
+```python
+def generate_watermark(n_bits=WATERMARK_BITS, mode="image", image_path=None):
+    wm_img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    dim = int(np.sqrt(n_bits)) # 32
+    wm_resized = cv2.resize(wm_img, (dim, dim))
+    _, wm_bin = cv2.threshold(wm_resized, 128, 1, cv2.THRESH_BINARY)
+    return wm_bin.flatten().astype(np.float32)
+```
 
-SEED           = 42    # Kunci rahasia — HARUS SAMA saat embedding & extraction
-                       # Ganti nilai ini untuk membuat watermark unik
+### 3. Konversi Gambar RGB ke YCrCb
+Sebelum watermark disisipkan, `Test_Project.jpg` diubah dari ruang warna RGB ke YCrCb. Sistem hanya mengambil **channel Y (Luminance)** karena channel ini mewakili informasi terang-gelap gambar yang lebih relevan terhadap struktur visual dan lebih kuat terhadap kompresi JPEG.
+```python
+img_ycbcr = cv2.cvtColor(host_img, cv2.COLOR_RGB2YCrCb).astype(np.float32)
+Y = img_ycbcr[:, :, 0]
+```
 
-QF_VALUES = [5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-                       # Nilai Quality Factor JPEG yang diuji saat evaluasi
+### 4. Transformasi DCT
+Channel Y diubah dari domain spasial (piksel) ke domain frekuensi menggunakan 2D *Discrete Cosine Transform* (DCT).
+```python
+Y_dct = cv2.dct(Y)
+flat_dct = Y_dct.flatten()
+```
+
+### 5. Memilih Koefisien Mid-Frequency
+Sistem tidak menyisipkan watermark pada frekuensi rendah (akan merusak gambar) atau frekuensi tinggi (akan hilang saat kompresi JPEG). Oleh karena itu, dipilih area pita frekuensi menengah (*mid-frequency*).
+```python
+n_total = len(flat_dct)
+mid_start = n_total // 6
+mid_end   = n_total // 2
+n_coeffs  = (mid_end - mid_start) // n_bits
+```
+
+### 6. Membuat Pseudo-Noise (PN) Sequence
+Untuk menyebar sinyal watermark (*spread spectrum*), sistem membuat PN sequence (berisi -1.0 dan 1.0) menggunakan kunci rahasia (`SEED = 42`).
+```python
+def get_pn_sequences(n_bits, n_coeffs, seed=SEED):
+    rng = np.random.default_rng(seed)
+    pn = rng.choice([-1.0, 1.0], size=(n_bits, n_coeffs))
+    return pn
+```
+
+### 7. Penyisipan Watermark (Embedding)
+Watermark disisipkan menggunakan metode *additive spread spectrum*. Jika bit bernilai 1, PN sequence ditambahkan. Jika 0, PN sequence dikurangkan. Kekuatan penyisipan diatur oleh variabel `ALPHA = 8.0`.
+```python
+for i, bit in enumerate(watermark_bits):
+    polarity = 1.0 if bit >= 0.5 else -1.0
+    idx_start = mid_start + i * n_coeffs
+    idx_end   = idx_start + n_coeffs
+    flat_dct[idx_start:idx_end] += ALPHA * polarity * pn_seqs[i]
+```
+
+### 8. Inverse DCT & Penggabungan Channel
+Matriks frekuensi dikembalikan ke domain piksel dengan Inverse DCT. Nilainya dibatasi dalam rentang 0-255, lalu digabungkan kembali dengan channel Cb dan Cr asli, dan dikonversi ke RGB.
+```python
+Y_wm = cv2.idct(flat_dct.reshape(H, W))
+Y_wm = np.clip(Y_wm, 0, 255)
+
+img_wm = img_ycbcr.copy()
+img_wm[:, :, 0] = Y_wm
+watermarked = cv2.cvtColor(img_wm.astype(np.uint8), cv2.COLOR_YCrCb2RGB)
+```
+*Hasil dari langkah ini disimpan sebagai `Test_Project_watermarked.jpg`.*
+
+### 9. Ekstraksi Watermark
+Proses ekstraksi adalah kebalikan dari embedding. Gambar yang diterima diubah ke DCT, kemudian dihitung korelasinya dengan PN sequence yang dibangkitkan dari `SEED` yang sama. Jika korelasi > 0, bit dianggap 1, sebaliknya bit dianggap 0.
+```python
+extracted = np.zeros(n_bits, dtype=np.float32)
+for i in range(n_bits):
+    idx_start = mid_start + i * n_coeffs
+    idx_end   = idx_start + n_coeffs
+    corr = np.dot(flat_dct[idx_start:idx_end], pn_seqs[i])
+    extracted[i] = 1.0 if corr > 0 else 0.0
+```
+
+### 10. Evaluasi Ketahanan (Robustness) terhadap Kompresi JPEG
+Sistem memvalidasi ketahanan watermark dengan melakukan kompresi JPEG menggunakan berbagai tingkat *Quality Factor* (QF). Semakin kecil QF, semakin kuat kompresinya.
+```python
+def jpeg_compress(img_rgb, quality):
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    _, encoded = cv2.imencode('.jpg', img_bgr, encode_params)
+    decoded_bgr = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    return cv2.cvtColor(decoded_bgr, cv2.COLOR_BGR2RGB)
 ```
 
 ---
 
-## 📊 Output yang Dihasilkan
+## 📈 Metrik & Hasil Evaluasi
 
-| File | Keterangan |
-|------|-----------|
-| `*_watermarked.jpg` | Foto hasil watermark (disimpan ke `images/`) |
-| `watermark_evaluation.png` | Grafik BER, NC, PSNR vs Quality Factor JPEG |
+Sistem menggunakan tiga metrik utama untuk evaluasi:
+1. **BER (Bit Error Rate)**: Proporsi bit yang salah ekstrak. (*Ideal: 0.0, Batas sukses < 0.10*)
+2. **NC (Normalized Correlation)**: Tingkat kemiripan pola watermark yang diekstrak dengan aslinya. (*Ideal: +1.0*)
+3. **PSNR (Peak Signal-to-Noise Ratio)**: Kualitas visual gambar bersisipan dibanding aslinya. (*Ideal: > 30 dB*)
 
----
+**Hasil Eksperimen pada `Test_Project.jpg` (`ALPHA = 8.0`, Mode: `image` 1024 bit)**:
 
-## 📐 Metode: DCT Spread Spectrum
+| QF  | BER    | NC      | PSNR (dB) | Status Ekstraksi | Keterangan |
+| --- | ------ | ------- | --------- | ---------------- | ---------- |
+| 5   | 0.4941 | +0.0117 | 23.9      | ✗ Gagal          | Kompresi terlalu agresif menghancurkan pita mid-frequency |
+| 30  | 0.2754 | +0.4492 | 29.6      | ✗ Gagal          | Kuantisasi JPEG masih merusak struktur watermark |
+| 60  | 0.1396 | +0.7207 | 31.9      | ✗ Gagal          | Mendekati batas ekstraksi yang wajar |
+| 70  | 0.0908 | +0.8184 | 32.9      | ✓ Berhasil       | Mulai titik ini, watermark dapat diekstrak secara visual |
+| 80  | 0.0557 | +0.8887 | 34.4      | ✓ Berhasil       | Ekstraksi sangat baik |
+| 100 | 0.0410 | +0.9180 | 45.2      | ✓ Berhasil       | PSNR tinggi, tanpa kompresi kehilangan (lossless behavior) |
 
-### Alur Embedding (Penyisipan)
-
-```
-Foto asli (RGB)
-    │
-    ▼
-Konversi ke YCbCr → ambil channel Y (luminance)
-    │
-    ▼
-DCT 2D global pada channel Y
-    │
-    ▼
-Pilih koefisien mid-frekuensi [N/6 : N/2]
-    │
-    ▼
-Generate PN sequence dari SEED (kunci rahasia)
-    │
-    ▼
-Additive embedding:
-    F_wm[k] = F_host[k] + α × b × pn[k]
-    (b = +1 jika bit=1, b = -1 jika bit=0)
-    │
-    ▼
-Inverse DCT → gabung dengan Cb, Cr asli
-    │
-    ▼
-Simpan sebagai *_watermarked.jpg
-```
-
-### Alur Extraction (Ekstraksi)
-
-```
-Foto watermarked (bisa sudah dikompres JPEG)
-    │
-    ▼
-YCbCr → channel Y → DCT 2D
-    │
-    ▼
-Ambil koefisien dengan indeks yang SAMA
-    │
-    ▼
-Korelasi dengan PN sequence (SEED sama):
-    corr = Σ F_received[k] × pn[k]
-    │
-    ▼
-Keputusan: bit = 1 jika corr > 0, bit = 0 jika corr ≤ 0
-    │
-    ▼
-Watermark terekstrak (64 bit)
-```
-
----
-
-## 📈 Hasil Evaluasi
-
-Hasil eksperimen pada `Test_Project.jpg` dengan `ALPHA = 8.0`:
-
-| QF | BER | NC | PSNR | Status |
-|----|-----|----|------|--------|
-| 5  | 0.3438 | +0.3125 | 23.9 dB | ✗ Gagal |
-| 10 | 0.1250 | +0.7500 | 26.2 dB | ✗ Gagal |
-| 15 | 0.0312 | +0.9375 | 27.4 dB | ✗ Gagal |
-| 20 | 0.0156 | +0.9688 | 28.3 dB | ✓ Berhasil |
-| 30 | 0.0000 | +1.0000 | 29.6 dB | ✓ Berhasil |
-| ≥30 | 0.0000 | +1.0000 | ≥29.6 dB | ✓ Berhasil |
-
-> **Kesimpulan:** Watermark **tidak dapat diekstrak** pada QF ≤ 10.  
-> Mulai **QF = 20**, watermark berhasil diekstrak. Pada **QF ≥ 30**, semua bit terekstrak sempurna.
-
-### Penjelasan Metrik
-
-| Metrik | Kepanjangan | Ideal | Keterangan |
-|--------|------------|-------|-----------|
-| **BER** | Bit Error Rate | `0.0` | Proporsi bit yang salah. `< 0.10` = berhasil |
-| **NC** | Normalized Correlation | `+1.0` | Kemiripan watermark. `≥ 0.80` = sangat baik |
-| **PSNR** | Peak Signal-to-Noise Ratio | `∞ dB` | Kualitas visual. `≥ 30 dB` = tidak terlihat mata |
-
----
-
-## 🛠️ Troubleshooting
-
-| Error | Solusi |
-|-------|--------|
-| `ModuleNotFoundError: No module named 'numpy'` | Jalankan `pip install numpy opencv-python matplotlib pillow` |
-| `Tidak ada file JPG ditemukan` | Pastikan foto ada di folder `images/`, bukan di `src/` |
-| Watermark tidak terdeteksi | Pastikan `SEED` sama antara saat embedding dan extraction |
-| Gambar output terlalu buram | Turunkan nilai `ALPHA` (misal dari 8.0 ke 5.0) |
-| Watermark hancur di QF rendah | Naikkan nilai `ALPHA` (misal dari 8.0 ke 15.0) |
-
----
-
-## 📚 Dependencies
-
-| Library | Versi | Fungsi |
-|---------|-------|--------|
-| `numpy` | ≥ 1.21 | Operasi array & matriks |
-| `opencv-python` | ≥ 4.5 | Baca/tulis gambar, DCT, kompresi JPEG |
-| `matplotlib` | ≥ 3.4 | Plot grafik evaluasi |
-| `pillow` | ≥ 8.0 | Utilitas gambar tambahan |
-
----
-
-*Metode: DCT Spread Spectrum Watermarking | Tools: Python 3, OpenCV, NumPy*
+> **Kesimpulan:** 
+> PSNR gambar asli vs watermarked adalah **34.98 dB**, yang menandakan penyisipan watermark bersifat *invisible* dan aman untuk penglihatan.
+> Namun, karena pesan yang dimasukkan cukup besar (1024 bit), ketahanan terhadap JPEG sedikit berkurang dibandingkan watermark ukuran kecil. Ekstraksi mulai berhasil dan stabil di **QF ≥ 70**.
